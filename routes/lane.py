@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
-from middleware.auth import get_current_user, require_admin, require_staff
+from middleware.auth import require_admin, require_staff, require_user
 from models.user import User
 from schemas.lane import (
     NodeCreate, NodeOut,
@@ -17,8 +17,24 @@ router = APIRouter(prefix="/api", tags=["lanes"])
 # ── Nodes ─────────────────────────────────────────────────
 
 @router.get("/nodes", response_model=list[NodeOut])
-async def list_nodes(db: AsyncSession = Depends(get_db)):
-    return await svc.get_all_nodes(db)
+async def list_nodes(
+    region:   str | None   = Query(None),
+    country:  str | None   = Query(None),
+    type:     str | None   = Query(None),
+    risk_min: float | None = Query(None),
+    risk_max: float | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
+):
+    return await svc.get_all_nodes(db, region=region, country=country, type=type, risk_min=risk_min, risk_max=risk_max)
+
+@router.get("/nodes/{node_id}", response_model=NodeOut)
+async def get_node(
+    node_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
+):
+    return await svc.get_node(db, node_id)
 
 @router.post("/nodes", response_model=NodeOut)
 async def create_node(
@@ -50,8 +66,22 @@ async def delete_node(
 # ── Carriers ──────────────────────────────────────────────
 
 @router.get("/carriers", response_model=list[CarrierOut])
-async def list_carriers(db: AsyncSession = Depends(get_db)):
-    return await svc.get_all_carriers(db)
+async def list_carriers(
+    mode:       str | None   = Query(None),
+    country:    str | None   = Query(None),
+    rating_min: float | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
+):
+    return await svc.get_all_carriers(db, mode=mode, country=country, rating_min=rating_min)
+
+@router.get("/carriers/{carrier_id}", response_model=CarrierOut)
+async def get_carrier(
+    carrier_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
+):
+    return await svc.get_carrier(db, carrier_id)
 
 @router.post("/carriers", response_model=CarrierOut)
 async def create_carrier(
@@ -83,13 +113,21 @@ async def delete_carrier(
 # ── Lanes ─────────────────────────────────────────────────
 
 @router.get("/lanes", response_model=list[LaneOut])
-async def list_lanes(db: AsyncSession = Depends(get_db)):
-    return await svc.get_all_lanes(db)
+async def list_lanes(
+    status:     str | None   = Query(None),
+    cargo_type: str | None   = Query(None),
+    risk_min:   float | None = Query(None),
+    risk_max:   float | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
+):
+    return await svc.get_all_lanes(db, status=status, cargo_type=cargo_type, risk_min=risk_min, risk_max=risk_max)
 
 @router.get("/lanes/{lane_id}", response_model=LaneOut)
 async def get_lane(
     lane_id: int,
     db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
 ):
     return await svc.get_lane(db, lane_id)
 
@@ -97,7 +135,7 @@ async def get_lane(
 async def create_lane(
     data: LaneCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_staff),
 ):
     return await svc.create_lane(db, data, owner_id=current_user.id)
 
@@ -106,7 +144,7 @@ async def update_lane(
     lane_id: int,
     data: LaneCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_staff),
 ):
     return await svc.update_lane(db, lane_id, data, owner_id=current_user.id)
 
@@ -123,13 +161,20 @@ async def delete_lane(
 # ── Caretakers ────────────────────────────────────────────
 
 @router.get("/caretakers", response_model=list[CaretakerOut])
-async def list_caretakers(db: AsyncSession = Depends(get_db)):
-    return await svc.get_all_caretakers(db)
+async def list_caretakers(
+    node_id: int | None = Query(None),
+    type:    str | None = Query(None),
+    country: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
+):
+    return await svc.get_all_caretakers(db, node_id=node_id, type=type, country=country)
 
 @router.get("/caretakers/{ct_id}", response_model=CaretakerOut)
 async def get_caretaker(
     ct_id: int,
     db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
 ):
     return await svc.get_caretaker(db, ct_id)
 
@@ -137,7 +182,7 @@ async def get_caretaker(
 async def create_caretaker(
     data: CaretakerCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
 ):
     return await svc.create_caretaker(db, data)
 
@@ -146,7 +191,7 @@ async def update_caretaker(
     ct_id: int,
     data: CaretakerCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_staff),
 ):
     return await svc.update_caretaker(db, ct_id, data)
 

@@ -4,6 +4,8 @@ from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 from models.lane import Lane, LaneNode, LaneLeg, Node, Carrier, Caretaker, LaneStatus
 from schemas.lane import LaneCreate, CaretakerCreate, NodeCreate, CarrierCreate
+import math
+from datetime import datetime, timezone
 
 
 # ── Risk helpers ──────────────────────────────────────────
@@ -44,7 +46,6 @@ def calc_lane_risk(nodes: list[Node], carriers: list[Carrier | None], req: list[
     for node in nodes:
         scores.append(node.risk)
 
-    # cert penalties
     for node in nodes:
         st = calc_node_cert_status(node, req)
         if st == "bad":
@@ -54,7 +55,7 @@ def calc_lane_risk(nodes: list[Node], carriers: list[Carrier | None], req: list[
 
     for carrier in carriers:
         if carrier is None:
-            scores.append(8.0)   # unassigned carrier = high risk
+            scores.append(8.0)
             continue
         if carrier.rating < 3:
             scores.append(8.0)
@@ -66,7 +67,6 @@ def calc_lane_risk(nodes: list[Node], carriers: list[Carrier | None], req: list[
         elif st == "warn":
             scores.append(6.0)
 
-    # transit penalty
     if total_hours > 168:
         scores.append(8.0)
     elif total_hours > 72:
@@ -86,6 +86,16 @@ def derive_status(risk: float) -> LaneStatus:
         return LaneStatus.warn
     return LaneStatus.bad
 
+def derive_transit_label(total_hours: float) -> str:
+    if total_hours <= 0:
+        return "TBD"
+    if total_hours < 24:
+        return f"{round(total_hours)}h"
+    days = math.ceil(total_hours / 24)
+    if days == 1:
+        return "1 day"
+    return f"{days} days"
+
 
 # ── Node CRUD ─────────────────────────────────────────────
 
@@ -96,8 +106,26 @@ async def create_node(db: AsyncSession, data: NodeCreate) -> Node:
     await db.refresh(node)
     return node
 
-async def get_all_nodes(db: AsyncSession) -> list[Node]:
-    result = await db.execute(select(Node).where(Node.is_active == True))
+async def get_all_nodes(
+    db: AsyncSession,
+    region:   str | None   = None,
+    country:  str | None   = None,
+    type:     str | None   = None,
+    risk_min: float | None = None,
+    risk_max: float | None = None,
+) -> list[Node]:
+    query = select(Node).where(Node.is_active == True)
+    if region:
+        query = query.where(Node.region == region)
+    if country:
+        query = query.where(Node.country == country)
+    if type:
+        query = query.where(Node.type == type)
+    if risk_min is not None:
+        query = query.where(Node.risk >= risk_min)
+    if risk_max is not None:
+        query = query.where(Node.risk <= risk_max)
+    result = await db.execute(query)
     return result.scalars().all()
 
 async def get_node(db: AsyncSession, node_id: int) -> Node:
@@ -130,8 +158,20 @@ async def create_carrier(db: AsyncSession, data: CarrierCreate) -> Carrier:
     await db.refresh(carrier)
     return carrier
 
-async def get_all_carriers(db: AsyncSession) -> list[Carrier]:
-    result = await db.execute(select(Carrier).where(Carrier.is_active == True))
+async def get_all_carriers(
+    db: AsyncSession,
+    mode:       str | None   = None,
+    country:    str | None   = None,
+    rating_min: float | None = None,
+) -> list[Carrier]:
+    query = select(Carrier).where(Carrier.is_active == True)
+    if mode:
+        query = query.where(Carrier.mode == mode)
+    if country:
+        query = query.where(Carrier.country == country)
+    if rating_min is not None:
+        query = query.where(Carrier.rating >= rating_min)
+    result = await db.execute(query)
     return result.scalars().all()
 
 async def get_carrier(db: AsyncSession, carrier_id: int) -> Carrier:
@@ -163,12 +203,10 @@ async def create_lane(db: AsyncSession, data: LaneCreate, owner_id: int | None =
     if len(data.legs) != len(data.node_ids) - 1:
         raise HTTPException(status_code=400, detail="legs count must equal nodes count minus 1")
 
-    # fetch nodes in order
     nodes = []
     for nid in data.node_ids:
         nodes.append(await get_node(db, nid))
 
-    # fetch carriers
     carriers = []
     for leg in data.legs:
         if leg.carrier_id:
@@ -179,6 +217,7 @@ async def create_lane(db: AsyncSession, data: LaneCreate, owner_id: int | None =
     req         = get_lane_requirements(data.cargo_type, data.extra_certs)
     total_hours = sum(c.avg_hours for c in carriers if c and c.avg_hours)
     risk        = calc_lane_risk(nodes, carriers, req, total_hours)
+    transit_label = derive_transit_label(total_hours)
     lane_status = derive_status(risk)
 
     lane = Lane(
@@ -186,6 +225,7 @@ async def create_lane(db: AsyncSession, data: LaneCreate, owner_id: int | None =
         cargo_type  = data.cargo_type,
         status      = lane_status,
         risk        = risk,
+        transit     = transit_label,
         total_hours = total_hours,
         departure   = data.departure,
         notes       = data.notes,
@@ -196,7 +236,7 @@ async def create_lane(db: AsyncSession, data: LaneCreate, owner_id: int | None =
         owner_id    = owner_id,
     )
     db.add(lane)
-    await db.flush()   # get lane.id before adding children
+    await db.flush()
 
     for i, node in enumerate(nodes):
         db.add(LaneNode(lane_id=lane.id, node_id=node.id, position=i))
@@ -226,8 +266,14 @@ async def get_lane(db: AsyncSession, lane_id: int) -> Lane:
         raise HTTPException(status_code=404, detail="Lane not found")
     return lane
 
-async def get_all_lanes(db: AsyncSession) -> list[Lane]:
-    result = await db.execute(
+async def get_all_lanes(
+    db: AsyncSession,
+    status:     str | None   = None,
+    cargo_type: str | None   = None,
+    risk_min:   float | None = None,
+    risk_max:   float | None = None,
+) -> list[Lane]:
+    query = (
         select(Lane)
         .where(Lane.is_active == True)
         .options(
@@ -235,12 +281,20 @@ async def get_all_lanes(db: AsyncSession) -> list[Lane]:
             selectinload(Lane.lane_legs).selectinload(LaneLeg.carrier),
         )
     )
+    if status:
+        query = query.where(Lane.status == status)
+    if cargo_type:
+        query = query.where(Lane.cargo_type == cargo_type)
+    if risk_min is not None:
+        query = query.where(Lane.risk >= risk_min)
+    if risk_max is not None:
+        query = query.where(Lane.risk <= risk_max)
+    result = await db.execute(query)
     return result.scalars().all()
 
 async def update_lane(db: AsyncSession, lane_id: int, data: LaneCreate, owner_id: int | None = None) -> Lane:
     lane = await get_lane(db, lane_id)
 
-    # wipe existing nodes and legs then rebuild
     await db.execute(delete(LaneNode).where(LaneNode.lane_id == lane_id))
     await db.execute(delete(LaneLeg).where(LaneLeg.lane_id  == lane_id))
 
@@ -258,11 +312,13 @@ async def update_lane(db: AsyncSession, lane_id: int, data: LaneCreate, owner_id
     req         = get_lane_requirements(data.cargo_type, data.extra_certs)
     total_hours = sum(c.avg_hours for c in carriers if c and c.avg_hours)
     risk        = calc_lane_risk(nodes, carriers, req, total_hours)
+    transit_label = derive_transit_label(total_hours)
 
     lane.name        = data.name
     lane.cargo_type  = data.cargo_type
     lane.status      = derive_status(risk)
     lane.risk        = risk
+    lane.transit     = transit_label
     lane.total_hours = total_hours
     lane.departure   = data.departure
     lane.notes       = data.notes
@@ -270,6 +326,7 @@ async def update_lane(db: AsyncSession, lane_id: int, data: LaneCreate, owner_id
     lane.temp_max    = data.temp_max
     lane.temp_unit   = data.temp_unit
     lane.extra_certs = data.extra_certs
+    lane.updated_at  = datetime.now(timezone.utc)
 
     for i, node in enumerate(nodes):
         db.add(LaneNode(lane_id=lane.id, node_id=node.id, position=i))
@@ -294,15 +351,27 @@ async def delete_lane(db: AsyncSession, lane_id: int):
 # ── Caretaker CRUD ────────────────────────────────────────
 
 async def create_caretaker(db: AsyncSession, data: CaretakerCreate) -> Caretaker:
-    await get_node(db, data.node_id)   # validate node exists
+    await get_node(db, data.node_id)
     ct = Caretaker(**data.model_dump())
     db.add(ct)
     await db.commit()
     await db.refresh(ct)
     return ct
 
-async def get_all_caretakers(db: AsyncSession) -> list[Caretaker]:
-    result = await db.execute(select(Caretaker).where(Caretaker.is_active == True))
+async def get_all_caretakers(
+    db: AsyncSession,
+    node_id: int | None = None,
+    type:    str | None = None,
+    country: str | None = None,
+) -> list[Caretaker]:
+    query = select(Caretaker).where(Caretaker.is_active == True)
+    if node_id:
+        query = query.where(Caretaker.node_id == node_id)
+    if type:
+        query = query.where(Caretaker.type == type)
+    if country:
+        query = query.where(Caretaker.country == country)
+    result = await db.execute(query)
     return result.scalars().all()
 
 async def get_caretaker(db: AsyncSession, ct_id: int) -> Caretaker:
@@ -314,7 +383,7 @@ async def get_caretaker(db: AsyncSession, ct_id: int) -> Caretaker:
 
 async def update_caretaker(db: AsyncSession, ct_id: int, data: CaretakerCreate) -> Caretaker:
     ct = await get_caretaker(db, ct_id)
-    await get_node(db, data.node_id)   # validate new node exists
+    await get_node(db, data.node_id)
     for k, v in data.model_dump().items():
         setattr(ct, k, v)
     await db.commit()

@@ -44,3 +44,40 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+
+class UserRoleUpdate(BaseModel):
+    role: UserRole
+
+class UserActiveUpdate(BaseModel):
+    is_active: bool
+
+class AccessLogOut(BaseModel):
+    id:         int
+    user_id:    int
+    action:     str
+    ip_address: str | None
+    timestamp:  datetime
+
+    model_config = {"from_attributes": True}
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password:     str
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Must contain uppercase letter")
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Must contain lowercase letter")
+        if not re.search(r"\d", v):
+            raise ValueError("Must contain a number")
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=\[\]\\\/`~';]", v):
+            raise ValueError("Must contain a special character")
+        return v
+
+class AccountUpdate(BaseModel):
+    organisation: str | None = None

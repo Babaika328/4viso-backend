@@ -92,3 +92,20 @@ async def login_user(db: AsyncSession, email: str, password: str, ip: str | None
     await db.refresh(user)
     await write_access_log(db, user.id, "login", ip)
     return user
+
+async def change_password(db: AsyncSession, user: User, current: str, new: str) -> User:
+    if not verify_password(current, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    user.hashed_password = hash_password(new)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+async def update_account(db: AsyncSession, user: User, organisation: str | None) -> User:
+    user.organisation = organisation
+    await db.commit()
+    await db.refresh(user)
+    return user
