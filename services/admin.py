@@ -1,7 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from fastapi import HTTPException
-from models.user import User, UserRole, AccessLog
+from models.user import User, UserRole, AccessLog, RefreshToken
+from schemas.user import UserCreate, UserLogin, PasswordChange, AccountUpdate
+from datetime import datetime
 
 
 # ── Users ─────────────────────────────────────────────────
@@ -41,14 +43,32 @@ async def delete_user(db: AsyncSession, user_id: int):
 
 async def get_all_logs(
     db: AsyncSession,
-    user_id: int | None = None,
-    action: str | None = None,
-    limit: int = 100,
+    user_id:    int | None      = None,
+    action:     str | None      = None,
+    date_from:  datetime | None = None,
+    date_to:    datetime | None = None,
+    limit:      int             = 100,
 ) -> list[AccessLog]:
     query = select(AccessLog).order_by(AccessLog.timestamp.desc()).limit(limit)
     if user_id:
         query = query.where(AccessLog.user_id == user_id)
     if action:
         query = query.where(AccessLog.action == action)
+    if date_from:
+        query = query.where(AccessLog.timestamp >= date_from)
+    if date_to:
+        query = query.where(AccessLog.timestamp <= date_to)
     result = await db.execute(query)
     return result.scalars().all()
+
+async def revoke_all_user_tokens(db: AsyncSession, user_id: int):
+    result = await db.execute(
+        select(RefreshToken).where(
+            RefreshToken.user_id == user_id,
+            RefreshToken.revoked == False,
+        )
+    )
+    tokens = result.scalars().all()
+    for t in tokens:
+        t.revoked = True
+    await db.commit()

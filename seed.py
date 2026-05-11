@@ -5,6 +5,8 @@ from models.user import Base
 from models.lane import Node, Carrier, Caretaker
 from services.lane import create_node, create_carrier, create_caretaker
 from schemas.lane import NodeCreate, CarrierCreate, CaretakerCreate
+from sqlalchemy import select, func
+from models.lane import Node
 
 NODES = [
     NodeCreate(company="DB Schenker BRU",    type="Warehouse",           country="BE", region="Europe",      risk=1.8, rating=4.2, lat=50.85, lng=4.35,   handling_time=1.5, timezone="CET", certs={"GDP":"ok","ISO 9001":"ok","IATA":"ok","AEO":"ok"}),
@@ -48,12 +50,17 @@ CARETAKERS = [
 
 
 async def seed():
-    # create all tables before inserting
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     print("Tables created.")
 
     async with AsyncSessionLocal() as db:
+        # check if already seeded
+        existing = await db.scalar(select(func.count()).where(Node.is_active == True))
+        if existing > 0:
+            print(f"Database already has {existing} nodes — skipping seed.")
+            return
+
         print("Seeding nodes...")
         for n in NODES:
             await create_node(db, n)

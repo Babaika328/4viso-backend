@@ -27,6 +27,7 @@ class User(Base):
     created_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     access_logs     = relationship("AccessLog", back_populates="user")
+    refresh_tokens  = relationship("RefreshToken", back_populates="user")
 
 
 class AccessLog(Base):
@@ -39,3 +40,15 @@ class AccessLog(Base):
     timestamp  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     user       = relationship("User", back_populates="access_logs")
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token      = Column(String, unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked    = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="refresh_tokens")

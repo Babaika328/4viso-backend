@@ -23,10 +23,15 @@ async def list_nodes(
     type:     str | None   = Query(None),
     risk_min: float | None = Query(None),
     risk_max: float | None = Query(None),
+    page:     int          = Query(1, ge=1),
+    limit:    int          = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_user),
 ):
-    return await svc.get_all_nodes(db, region=region, country=country, type=type, risk_min=risk_min, risk_max=risk_max)
+    return await svc.get_all_nodes(
+        db, region=region, country=country, type=type,
+        risk_min=risk_min, risk_max=risk_max, page=page, limit=limit
+    )
 
 @router.get("/nodes/{node_id}", response_model=NodeOut)
 async def get_node(
@@ -70,10 +75,15 @@ async def list_carriers(
     mode:       str | None   = Query(None),
     country:    str | None   = Query(None),
     rating_min: float | None = Query(None),
+    page:       int          = Query(1, ge=1),
+    limit:      int          = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_user),
 ):
-    return await svc.get_all_carriers(db, mode=mode, country=country, rating_min=rating_min)
+    return await svc.get_all_carriers(
+        db, mode=mode, country=country,
+        rating_min=rating_min, page=page, limit=limit
+    )
 
 @router.get("/carriers/{carrier_id}", response_model=CarrierOut)
 async def get_carrier(
@@ -118,10 +128,18 @@ async def list_lanes(
     cargo_type: str | None   = Query(None),
     risk_min:   float | None = Query(None),
     risk_max:   float | None = Query(None),
+    my_lanes:   bool         = Query(False),
+    page:       int          = Query(1, ge=1),
+    limit:      int          = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_user),
+    current_user: User = Depends(require_user),
 ):
-    return await svc.get_all_lanes(db, status=status, cargo_type=cargo_type, risk_min=risk_min, risk_max=risk_max)
+    owner_id = current_user.id if my_lanes else None
+    return await svc.get_all_lanes(
+        db, status=status, cargo_type=cargo_type,
+        risk_min=risk_min, risk_max=risk_max,
+        owner_id=owner_id, page=page, limit=limit
+    )
 
 @router.get("/lanes/{lane_id}", response_model=LaneOut)
 async def get_lane(
@@ -157,6 +175,13 @@ async def delete_lane(
     await svc.delete_lane(db, lane_id)
     return {"detail": "Lane deactivated"}
 
+@router.post("/lanes/{lane_id}/duplicate", response_model=LaneOut)
+async def duplicate_lane(
+    lane_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_staff),
+):
+    return await svc.duplicate_lane(db, lane_id, owner_id=current_user.id)
 
 # ── Caretakers ────────────────────────────────────────────
 
@@ -165,10 +190,15 @@ async def list_caretakers(
     node_id: int | None = Query(None),
     type:    str | None = Query(None),
     country: str | None = Query(None),
+    page:    int        = Query(1, ge=1),
+    limit:   int        = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_user),
 ):
-    return await svc.get_all_caretakers(db, node_id=node_id, type=type, country=country)
+    return await svc.get_all_caretakers(
+        db, node_id=node_id, type=type,
+        country=country, page=page, limit=limit
+    )
 
 @router.get("/caretakers/{ct_id}", response_model=CaretakerOut)
 async def get_caretaker(
@@ -177,6 +207,14 @@ async def get_caretaker(
     _: User = Depends(require_user),
 ):
     return await svc.get_caretaker(db, ct_id)
+
+@router.get("/caretakers/{ct_id}/lanes", response_model=list[LaneOut])
+async def get_caretaker_lanes(
+    ct_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_user),
+):
+    return await svc.get_lanes_by_caretaker(db, ct_id)
 
 @router.post("/caretakers", response_model=CaretakerOut)
 async def create_caretaker(

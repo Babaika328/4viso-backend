@@ -5,6 +5,7 @@ from middleware.auth import require_admin
 from models.user import User, UserRole
 from schemas.user import UserOut, UserRoleUpdate, UserActiveUpdate, AccessLogOut
 import services.admin as svc
+from datetime import datetime
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -53,15 +54,32 @@ async def delete_user(
     await svc.delete_user(db, user_id)
     return {"detail": "User deleted"}
 
+@router.post("/users/{user_id}/revoke-tokens")
+async def revoke_tokens(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    await svc.revoke_all_user_tokens(db, user_id)
+    return {"detail": f"All tokens revoked for user {user_id}"}
 
 # ── Access logs ───────────────────────────────────────────
 
 @router.get("/logs", response_model=list[AccessLogOut])
 async def get_logs(
-    user_id: int | None = Query(None),
-    action:  str | None = Query(None),
-    limit:   int        = Query(100, le=500),
+    user_id:   int | None      = Query(None),
+    action:    str | None      = Query(None),
+    date_from: datetime | None = Query(None),
+    date_to:   datetime | None = Query(None),
+    limit:     int             = Query(100, le=500),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    return await svc.get_all_logs(db, user_id=user_id, action=action, limit=limit)
+    return await svc.get_all_logs(
+        db,
+        user_id=user_id,
+        action=action,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )

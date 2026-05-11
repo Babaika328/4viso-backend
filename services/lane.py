@@ -1,11 +1,11 @@
+import math
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from models.lane import Lane, LaneNode, LaneLeg, Node, Carrier, Caretaker, LaneStatus
 from schemas.lane import LaneCreate, CaretakerCreate, NodeCreate, CarrierCreate
-import math
-from datetime import datetime, timezone
 
 
 # ── Risk helpers ──────────────────────────────────────────
@@ -40,7 +40,12 @@ def calc_carrier_cert_status(carrier: Carrier, req: list[str]) -> str:
             return "warn"
     return "ok"
 
-def calc_lane_risk(nodes: list[Node], carriers: list[Carrier | None], req: list[str], total_hours: float) -> float:
+def calc_lane_risk(
+    nodes: list[Node],
+    carriers: list[Carrier | None],
+    req: list[str],
+    total_hours: float
+) -> float:
     scores = []
 
     for node in nodes:
@@ -96,6 +101,10 @@ def derive_transit_label(total_hours: float) -> str:
         return "1 day"
     return f"{days} days"
 
+def paginate(query, page: int, limit: int):
+    offset = (page - 1) * limit
+    return query.offset(offset).limit(limit)
+
 
 # ── Node CRUD ─────────────────────────────────────────────
 
@@ -113,6 +122,8 @@ async def get_all_nodes(
     type:     str | None   = None,
     risk_min: float | None = None,
     risk_max: float | None = None,
+    page:     int          = 1,
+    limit:    int          = 50,
 ) -> list[Node]:
     query = select(Node).where(Node.is_active == True)
     if region:
@@ -125,6 +136,7 @@ async def get_all_nodes(
         query = query.where(Node.risk >= risk_min)
     if risk_max is not None:
         query = query.where(Node.risk <= risk_max)
+    query = paginate(query, page, limit)
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -163,6 +175,8 @@ async def get_all_carriers(
     mode:       str | None   = None,
     country:    str | None   = None,
     rating_min: float | None = None,
+    page:       int          = 1,
+    limit:      int          = 50,
 ) -> list[Carrier]:
     query = select(Carrier).where(Carrier.is_active == True)
     if mode:
@@ -171,6 +185,7 @@ async def get_all_carriers(
         query = query.where(Carrier.country == country)
     if rating_min is not None:
         query = query.where(Carrier.rating >= rating_min)
+    query = paginate(query, page, limit)
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -197,7 +212,11 @@ async def delete_carrier(db: AsyncSession, carrier_id: int):
 
 # ── Lane CRUD ─────────────────────────────────────────────
 
-async def create_lane(db: AsyncSession, data: LaneCreate, owner_id: int | None = None) -> Lane:
+async def create_lane(
+    db: AsyncSession,
+    data: LaneCreate,
+    owner_id: int | None = None
+) -> Lane:
     if len(data.node_ids) < 2:
         raise HTTPException(status_code=400, detail="A lane needs at least 2 nodes")
     if len(data.legs) != len(data.node_ids) - 1:
@@ -214,11 +233,11 @@ async def create_lane(db: AsyncSession, data: LaneCreate, owner_id: int | None =
         else:
             carriers.append(None)
 
-    req         = get_lane_requirements(data.cargo_type, data.extra_certs)
-    total_hours = sum(c.avg_hours for c in carriers if c and c.avg_hours)
-    risk        = calc_lane_risk(nodes, carriers, req, total_hours)
+    req           = get_lane_requirements(data.cargo_type, data.extra_certs)
+    total_hours   = sum(c.avg_hours for c in carriers if c and c.avg_hours)
+    risk          = calc_lane_risk(nodes, carriers, req, total_hours)
     transit_label = derive_transit_label(total_hours)
-    lane_status = derive_status(risk)
+    lane_status   = derive_status(risk)
 
     lane = Lane(
         name        = data.name,
@@ -272,6 +291,9 @@ async def get_all_lanes(
     cargo_type: str | None   = None,
     risk_min:   float | None = None,
     risk_max:   float | None = None,
+    owner_id:   int | None   = None,
+    page:       int          = 1,
+    limit:      int          = 50,
 ) -> list[Lane]:
     query = (
         select(Lane)
@@ -289,10 +311,18 @@ async def get_all_lanes(
         query = query.where(Lane.risk >= risk_min)
     if risk_max is not None:
         query = query.where(Lane.risk <= risk_max)
+    if owner_id is not None:
+        query = query.where(Lane.owner_id == owner_id)
+    query = paginate(query, page, limit)
     result = await db.execute(query)
     return result.scalars().all()
 
-async def update_lane(db: AsyncSession, lane_id: int, data: LaneCreate, owner_id: int | None = None) -> Lane:
+async def update_lane(
+    db: AsyncSession,
+    lane_id: int,
+    data: LaneCreate,
+    owner_id: int | None = None
+) -> Lane:
     lane = await get_lane(db, lane_id)
 
     await db.execute(delete(LaneNode).where(LaneNode.lane_id == lane_id))
@@ -309,9 +339,9 @@ async def update_lane(db: AsyncSession, lane_id: int, data: LaneCreate, owner_id
         else:
             carriers.append(None)
 
-    req         = get_lane_requirements(data.cargo_type, data.extra_certs)
-    total_hours = sum(c.avg_hours for c in carriers if c and c.avg_hours)
-    risk        = calc_lane_risk(nodes, carriers, req, total_hours)
+    req           = get_lane_requirements(data.cargo_type, data.extra_certs)
+    total_hours   = sum(c.avg_hours for c in carriers if c and c.avg_hours)
+    risk          = calc_lane_risk(nodes, carriers, req, total_hours)
     transit_label = derive_transit_label(total_hours)
 
     lane.name        = data.name
@@ -348,6 +378,58 @@ async def delete_lane(db: AsyncSession, lane_id: int):
     await db.commit()
 
 
+async def duplicate_lane(db: AsyncSession, lane_id: int, owner_id: int | None = None) -> Lane:
+    original = await get_lane(db, lane_id)
+
+    new_lane = Lane(
+        name        = f"{original.name} (copy)",
+        cargo_type  = original.cargo_type,
+        status      = original.status,
+        risk        = original.risk,
+        transit     = original.transit,
+        total_hours = original.total_hours,
+        departure   = original.departure,
+        notes       = original.notes,
+        temp_min    = original.temp_min,
+        temp_max    = original.temp_max,
+        temp_unit   = original.temp_unit,
+        extra_certs = original.extra_certs,
+        owner_id    = owner_id,
+    )
+    db.add(new_lane)
+    await db.flush()
+
+    for ln in original.lane_nodes:
+        db.add(LaneNode(lane_id=new_lane.id, node_id=ln.node_id, position=ln.position))
+
+    for ll in original.lane_legs:
+        db.add(LaneLeg(
+            lane_id    = new_lane.id,
+            carrier_id = ll.carrier_id,
+            position   = ll.position,
+            leg_time   = ll.leg_time,
+        ))
+
+    await db.commit()
+    return await get_lane(db, new_lane.id)
+
+async def get_lanes_by_caretaker(db: AsyncSession, ct_id: int) -> list[Lane]:
+    ct = await get_caretaker(db, ct_id)
+
+    result = await db.execute(
+        select(Lane)
+        .join(LaneNode, LaneNode.lane_id == Lane.id)
+        .where(
+            Lane.is_active == True,
+            LaneNode.node_id == ct.node_id,
+        )
+        .options(
+            selectinload(Lane.lane_nodes).selectinload(LaneNode.node),
+            selectinload(Lane.lane_legs).selectinload(LaneLeg.carrier),
+        )
+    )
+    return result.scalars().all()
+
 # ── Caretaker CRUD ────────────────────────────────────────
 
 async def create_caretaker(db: AsyncSession, data: CaretakerCreate) -> Caretaker:
@@ -363,6 +445,8 @@ async def get_all_caretakers(
     node_id: int | None = None,
     type:    str | None = None,
     country: str | None = None,
+    page:    int        = 1,
+    limit:   int        = 50,
 ) -> list[Caretaker]:
     query = select(Caretaker).where(Caretaker.is_active == True)
     if node_id:
@@ -371,6 +455,7 @@ async def get_all_caretakers(
         query = query.where(Caretaker.type == type)
     if country:
         query = query.where(Caretaker.country == country)
+    query = paginate(query, page, limit)
     result = await db.execute(query)
     return result.scalars().all()
 
