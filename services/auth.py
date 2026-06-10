@@ -18,6 +18,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 # ── JWT config ────────────────────────────────────────────
 
 SECRET_KEY             = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY not found in environment")
 ALGORITHM              = "HS256"
 TOKEN_EXPIRE_MINUTES   = 60 * 8    # 8 hours
 REFRESH_TOKEN_EXPIRE_DAYS = 30
@@ -138,7 +140,7 @@ async def register_user(db: AsyncSession, data: UserCreate, ip: str | None) -> U
     user = User(
         email           = data.email,
         hashed_password = hash_password(data.password),
-        role            = data.role,
+        role            = UserRole.user,   # self-registration is always 'user'; admins assign elevated roles
         organisation    = data.organisation,
     )
     db.add(user)
